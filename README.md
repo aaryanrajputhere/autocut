@@ -45,18 +45,10 @@ unsupported devices, AutoCut creates a lightweight storyboard and lets the
 user explicitly request a playable H.264 proxy. Final exports use browser
 FFmpeg. Audio-only M4A/AAC files are not video-editor inputs.
 
-## Queued HEVC previews
+## HEVC previews
 
-HEVC uploads also create a queued 720p H.264 proxy job. Connect a Neon
-Postgres integration so `DATABASE_URL` is available, and enable Vercel
-Queues for the project. The upload completion callback publishes to
-`video-preview-jobs`; the private queue consumer runs the bundled FFmpeg
-binary and stores its result under `previews/<user>/<job>.mp4`.
-
-The consumer is configured for a 30-minute, 4 GB function in `vercel.json`,
-which requires a Pro or Enterprise project with the extended-duration beta.
-The editor polls the job and switches to the authenticated private preview
-route when it is ready. Browser-side five-second chunks remain the fallback.
-
-The table is created lazily by the app. For explicit migrations, run
-`db/preview-jobs.sql` against the connected Neon database.
+When the browser cannot play HEVC directly, the editor creates five-second
+H.264 preview chunks with browser FFmpeg. It prepares the first chunk before
+opening the timeline, preloads upcoming chunks, and keeps a bounded cache
+around the playhead. The original private Blob upload continues independently
+and no database, queue, or long-running server function is required.

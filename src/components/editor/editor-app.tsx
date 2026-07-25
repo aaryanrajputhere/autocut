@@ -14,7 +14,6 @@ import {
   checkExportEntitlement,
   claimFreeExport,
   deleteStoredMedia,
-  getPreviewJob,
   PaymentRequiredError,
   uploadMedia,
 } from "@/lib/server-media-client";
@@ -44,8 +43,6 @@ export function EditorApp() {
   const [videoPlayable, setVideoPlayable] = useState(true);
   const [storyboardUrls, setStoryboardUrls] = useState<string[]>([]);
   const [creatingPreview, setCreatingPreview] = useState(false);
-  const [previewJobId, setPreviewJobId] = useState<string | null>(null);
-  const [serverPreviewStatus, setServerPreviewStatus] = useState<"idle" | "queued" | "processing" | "ready" | "failed">("idle");
   const [previewChunks, setPreviewChunks] = useState<PreviewChunk[]>([]);
   const file = useEditorStore((state) => state.file);
   const metadata = useEditorStore((state) => state.metadata);
@@ -88,56 +85,14 @@ export function EditorApp() {
     return () => window.clearTimeout(timeout);
   }, [file, metadata, ranges, settings, status]);
 
-  useEffect(() => {
-    if (!previewJobId || videoPlayable || serverPreviewStatus === "failed") return;
-    const abort = new AbortController();
-    let timeout = 0;
-    const poll = async () => {
-      try {
-        const job = await getPreviewJob(previewJobId, abort.signal);
-        if (!job?.status) {
-          timeout = window.setTimeout(poll, 1500);
-          return;
-        }
-        setServerPreviewStatus(job.status);
-        if (job.status === "ready") {
-          chunkControllerRef.current?.cancel();
-          chunkControllerRef.current = null;
-          setPreviewChunks([]);
-          setSourceUrl(`/api/preview-jobs/${previewJobId}/content`);
-          setVideoPlayable(true);
-          return;
-        }
-        if (job.status === "failed") {
-          setUploadError(job.error || "Server preview conversion failed. Browser preview remains available.");
-          return;
-        }
-        timeout = window.setTimeout(poll, 2000);
-      } catch (cause) {
-        if (!abort.signal.aborted) {
-          setUploadError(cause instanceof Error ? cause.message : "Could not check server preview.");
-          timeout = window.setTimeout(poll, 5000);
-        }
-      }
-    };
-    void poll();
-    return () => {
-      abort.abort();
-      window.clearTimeout(timeout);
-    };
-  }, [previewJobId, serverPreviewStatus, setSourceUrl, videoPlayable]);
-
-  const startUpload = (nextFile: File, nextUserId: string, needsPreview: boolean) => {
+  const startUpload = (nextFile: File, nextUserId: string) => {
     uploadAbortRef.current?.abort();
     const abort = new AbortController();
-    const nextPreviewJobId = needsPreview ? crypto.randomUUID() : null;
     uploadAbortRef.current = abort;
-    setPreviewJobId(nextPreviewJobId);
-    setServerPreviewStatus(nextPreviewJobId ? "queued" : "idle");
     setUploadStatus("uploading");
     setUploadProgress(0);
     setUploadError("");
-    void uploadMedia(nextFile, nextUserId, nextPreviewJobId, (value) => {
+    void uploadMedia(nextFile, nextUserId, (value) => {
       setUploadProgress(value);
     }, abort.signal).then((blob) => {
       setBlobPathname(blob.pathname);
@@ -208,7 +163,7 @@ export function EditorApp() {
       loadFile(nextFile, url, nextMetadata);
       const abort = new AbortController();
       processingAbortRef.current = abort;
-      startUpload(nextFile, userId, nextMetadata.videoCodec === "hevc");
+      startUpload(nextFile, userId);
       await analyze(nextFile, nextMetadata, abort, nativePlayable);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not read this video.");
@@ -291,7 +246,7 @@ export function EditorApp() {
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
       }
-      await deleteStoredMedia(blobPathname, previewJobId);
+      await deleteStoredMedia(blobPathname);
       setBlobPathname(null);
       setUploadStatus("idle");
       setProcessingStage("Private source deleted");
@@ -339,11 +294,8 @@ export function EditorApp() {
           <strong>Private upload: {uploadStatus === "uploading" ? `${Math.round(uploadProgress * 100)}%` : uploadStatus}</strong>
           <span>{uploadStatus === "failed" ? uploadError : "Local editing runs independently; export unlocks after upload completes."}</span>
         </div>
-        {uploadStatus === "failed" && file && userId && <button className="button button-ghost" onClick={() => startUpload(file, userId, metadata?.videoCodec === "hevc")}>Retry upload</button>}
+        {uploadStatus === "failed" && file && userId && <button className="button button-ghost" onClick={() => startUpload(file, userId)}>Retry upload</button>}
         {uploadStatus === "uploading" && <button className="button button-ghost" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button>}
-        {!videoPlayable && serverPreviewStatus !== "idle" && (
-          <span>Server H.264 preview: {serverPreviewStatus}</span>
-        )}
       </div>
       {!file ? <FileDrop onFile={(selected) => void handleFile(selected)} busy={status === "analyzing"} /> : (
         <div className="workspace">

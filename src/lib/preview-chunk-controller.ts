@@ -7,6 +7,7 @@ export const PREVIEW_CHUNK_SECONDS = 5;
 export const PREVIEW_CACHE_CHUNKS = 12;
 
 type Listener = (chunks: PreviewChunk[]) => void;
+type ChunkEncoder = typeof generatePreviewChunk;
 
 export class PreviewChunkController {
   private chunks = new Map<number, PreviewChunk>();
@@ -19,6 +20,7 @@ export class PreviewChunkController {
   constructor(
     private readonly file: File,
     private readonly durationSeconds: number,
+    private readonly encodeChunk: ChunkEncoder = generatePreviewChunk,
   ) {}
 
   subscribe(listener: Listener) {
@@ -42,7 +44,12 @@ export class PreviewChunkController {
   }
 
   async prepareFirst(onProgress: (progress: number, stage?: string) => void) {
-    this.requestAt(0, onProgress);
+    // Startup only needs one playable chunk. Queueing the full look-ahead here
+    // blocks silence analysis because both operations share the same FFmpeg
+    // worker. Forward chunks are queued after analysis when requestAt(0) runs.
+    this.playheadIndex = 0;
+    this.enqueue(0, true);
+    void this.drain(onProgress);
     while (!this.cancelled) {
       const chunk = this.chunks.get(0);
       if (chunk?.status === "ready") return chunk;
@@ -79,7 +86,8 @@ export class PreviewChunkController {
       status: "queued",
     });
     this.queue = this.queue.filter((item) => item !== index);
-    priority ? this.queue.unshift(index) : this.queue.push(index);
+    if (priority) this.queue.unshift(index);
+    else this.queue.push(index);
     this.emit();
   }
 
@@ -98,7 +106,7 @@ export class PreviewChunkController {
         this.chunks.set(index, { ...chunk, status: "processing", error: undefined });
         this.emit();
         try {
-          const blob = await generatePreviewChunk(
+          const blob = await this.encodeChunk(
             this.file,
             chunk.sourceStart,
             chunk.sourceEnd - chunk.sourceStart,
