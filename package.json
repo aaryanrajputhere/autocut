@@ -1,0 +1,41 @@
+{
+  "name": "autocut-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
+    "geist": "^1.7.2",
+    "lucide-react": "^0.468.0",
+    "mediabunny": "^1.29.1",
+    "next": "^16.1.6",
+    "postcss": "^8.5.18",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "sharp": "^0.35.0",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.3",
+    "@types/react-dom": "^19.0.2",
+    "eslint": "^9.17.0",
+    "eslint-config-next": "^16.1.6",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "overrides": {
+    "postcss": "$postcss",
+    "sharp": "$sharp"
+  }
+}

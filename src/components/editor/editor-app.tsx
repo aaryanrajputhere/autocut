@@ -1,0 +1,215 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, Check, Download, FileVideo, Scissors, Undo2, Redo2, X } from "lucide-react";
+import { FileDrop } from "./file-drop";
+import { Inspector } from "./inspector";
+import { Timeline } from "./timeline";
+import { VideoPlayer } from "./video-player";
+import { useEditorStore } from "@/lib/editor-store";
+import { readMetadata } from "@/lib/media";
+import { analyzeOnServer, createPreviewOnServer, exportOnServer, uploadMedia } from "@/lib/server-media-client";
+import { saveProject, sourceFingerprint } from "@/lib/project-storage";
+import { formatTime } from "@/lib/time";
+
+export function EditorApp() {
+  const processingAbortRef = useRef<AbortController | null>(null);
+  const [mediaId, setMediaId] = useState<string | null>(null);
+  const [processingStage, setProcessingStage] = useState("");
+  const file = useEditorStore((state) => state.file);
+  const metadata = useEditorStore((state) => state.metadata);
+  const ranges = useEditorStore((state) => state.ranges);
+  const settings = useEditorStore((state) => state.settings);
+  const status = useEditorStore((state) => state.status);
+  const progress = useEditorStore((state) => state.progress);
+  const error = useEditorStore((state) => state.error);
+  const past = useEditorStore((state) => state.past);
+  const future = useEditorStore((state) => state.future);
+  const sourceUrl = useEditorStore((state) => state.sourceUrl);
+  const loadFile = useEditorStore((state) => state.loadFile);
+  const setAnalysis = useEditorStore((state) => state.setAnalysis);
+  const setSourceUrl = useEditorStore((state) => state.setSourceUrl);
+  const setStatus = useEditorStore((state) => state.setStatus);
+  const setError = useEditorStore((state) => state.setError);
+  const undo = useEditorStore((state) => state.undo);
+  const redo = useEditorStore((state) => state.redo);
+
+  useEffect(() => () => {
+    if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+  }, [sourceUrl]);
+  useEffect(() => {
+    if (!file || !metadata || !ranges.length || status !== "ready") return;
+    const timeout = window.setTimeout(() => {
+      void saveProject({
+        id: sourceFingerprint(file),
+        name: file.name,
+        sourceFingerprint: sourceFingerprint(file),
+        metadata,
+        settings,
+        ranges,
+        updatedAt: Date.now(),
+      }).catch(() => undefined);
+    }, 500);
+    return () => window.clearTimeout(timeout);
+  }, [file, metadata, ranges, settings, status]);
+
+  const analyze = async (nextFile: File, nextMetadata: NonNullable<typeof metadata>, abort: AbortController) => {
+    setStatus("analyzing", 0);
+    try {
+      const mediaId = await uploadMedia(nextFile, (value, stage) => {
+        setProcessingStage(stage ?? "Uploading video");
+        setStatus("analyzing", value * 0.65);
+      }, abort.signal);
+      setMediaId(mediaId);
+      setProcessingStage("Analyzing audio on server");
+      setStatus("analyzing", 0.72);
+      const result = await analyzeOnServer(mediaId, nextMetadata, settings, abort.signal);
+      if (nextMetadata.videoCodec === "hevc" && !browserCanPlayHevc()) {
+        setProcessingStage("Creating fast server preview");
+        setStatus("analyzing", 0.86);
+        const proxy = await createPreviewOnServer(mediaId, abort.signal);
+        setSourceUrl(URL.createObjectURL(proxy));
+      }
+      setAnalysis(result);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") setStatus("empty");
+      else setError(cause instanceof Error ? cause.message : "The server could not analyze this video.");
+    }
+  };
+
+  const handleFile = async (nextFile: File) => {
+    try {
+      setStatus("analyzing", 0);
+      const nextMetadata = await readMetadata(nextFile);
+      const url = URL.createObjectURL(nextFile);
+      loadFile(nextFile, url, nextMetadata);
+      const abort = new AbortController();
+      processingAbortRef.current = abort;
+      await analyze(nextFile, nextMetadata, abort);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not read this video.");
+    }
+  };
+
+  const handleExport = async () => {
+    if (!file || !metadata) return;
+    if (!mediaId) {
+      setError("The server upload has expired. Select the video again.");
+      return;
+    }
+    const abort = new AbortController();
+    processingAbortRef.current = abort;
+    try {
+      setStatus("exporting", 0);
+      setProcessingStage("Rendering MP4 on server");
+      setStatus("exporting", 0.02);
+      const response = await exportOnServer(mediaId, ranges, abort.signal, (value, stage) => {
+        setProcessingStage(stage ?? "Rendering MP4 on server");
+        setStatus("exporting", value);
+      });
+      const handle = await maybeSaveWithPicker(`${file.name.replace(/\.[^.]+$/, "")}-autocut.mp4`);
+      if (handle && response.body) {
+        const writable = await handle.createWritable();
+        await response.body.pipeTo(writable);
+      } else {
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${file.name.replace(/\.[^.]+$/, "")}-autocut.mp4`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      }
+      setStatus("ready", 1);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") setStatus("ready");
+      else setError(cause instanceof Error ? cause.message : "Export failed.");
+    }
+  };
+
+  const exportReady = Boolean(mediaId);
+  const keptDuration = ranges.filter((range) => range.enabled).reduce((sum, range) => sum + range.sourceEndUs - range.sourceStartUs, 0);
+
+  return (
+    <main className="editor-shell">
+      <header className="editor-header">
+        <Link href="/" className="brand"><span className="brand-mark"><Scissors size={17} /></span>autocut</Link>
+        <div className="header-center">
+          {file && <><FileVideo size={15} /><span>{file.name}</span><small>{metadata ? formatBytes(metadata.size) : ""}</small></>}
+        </div>
+        <div className="header-actions">
+          <button className="icon-button" aria-label="Undo" disabled={!past.length} onClick={undo}><Undo2 size={17} /></button>
+          <button className="icon-button" aria-label="Redo" disabled={!future.length} onClick={redo}><Redo2 size={17} /></button>
+          {file && <button className="button button-primary export-button" onClick={() => void handleExport()} disabled={!exportReady || status !== "ready" || !ranges.some((range) => range.enabled)}>
+            <Download size={16} /> Export MP4
+          </button>}
+        </div>
+      </header>
+
+      <div className="compatibility-note"><Check /><div><strong>Fast server processing ready</strong><span>Native FFmpeg handles analysis and export. Your browser stays responsive.</span></div></div>
+      {!file ? <FileDrop onFile={(selected) => void handleFile(selected)} busy={status === "analyzing"} /> : (
+        <div className="workspace">
+          <div className="workspace-main">
+            <VideoPlayer />
+            <Timeline />
+            <footer className="status-bar">
+              <span><Check size={13} /> Local project</span>
+              <span>{ranges.filter((range) => range.enabled).length} clips · {formatTime(keptDuration, false)} output</span>
+              <span>H.264 · {metadata?.width}×{metadata?.height}</span>
+            </footer>
+          </div>
+          <Inspector />
+        </div>
+      )}
+
+      {(status === "analyzing" || status === "exporting") && (
+        <div className="progress-overlay" role="status" aria-live="polite">
+          <div className="progress-card">
+            <div className="spinner" />
+            <strong>{processingStage || (status === "analyzing" ? "Listening for silent gaps…" : "Rendering your clean cut…")}</strong>
+            <p>{status === "analyzing" ? "Your video uploads once, then native FFmpeg analyzes it." : "Native FFmpeg is encoding H.264 and AAC on the server."}</p>
+            <div className="progress-track"><i style={{ width: `${Math.round(progress * 100)}%` }} /></div>
+            <span>{Math.round(progress * 100)}%</span>
+            <button className="button button-ghost" onClick={() => {
+              processingAbortRef.current?.abort();
+              setStatus(file ? "ready" : "empty");
+            }}><X size={15} /> Cancel</button>
+          </div>
+        </div>
+      )}
+      {error && (
+        <div className="toast error-toast" role="alert"><AlertTriangle size={18} /><div><strong>Something went wrong</strong><span>{error}</span></div><button aria-label="Dismiss error" onClick={() => setStatus(file ? "ready" : "empty")}><X size={16} /></button></div>
+      )}
+    </main>
+  );
+}
+
+type SaveFilePickerWindow = Window & {
+  showSaveFilePicker?: (options: {
+    suggestedName: string;
+    types: { description: string; accept: Record<string, string[]> }[];
+  }) => Promise<FileSystemFileHandle>;
+};
+
+async function maybeSaveWithPicker(name: string) {
+  const picker = (window as SaveFilePickerWindow).showSaveFilePicker;
+  if (!picker) return null;
+  return picker({
+    suggestedName: name,
+    types: [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }],
+  });
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+}
+
+function browserCanPlayHevc() {
+  const video = document.createElement("video");
+  return Boolean(
+    video.canPlayType('video/mp4; codecs="hvc1"') ||
+    video.canPlayType('video/mp4; codecs="hev1"'),
+  );
+}
