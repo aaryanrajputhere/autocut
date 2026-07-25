@@ -11,20 +11,26 @@ import { VideoPlayer } from "./video-player";
 import { useEditorStore } from "@/lib/editor-store";
 import { readMetadata } from "@/lib/media";
 import {
-  analyzeOnServer,
-  createPreviewOnServer,
-  exportOnServer,
+  checkExportEntitlement,
+  claimFreeExport,
+  deleteStoredMedia,
   PaymentRequiredError,
   uploadMedia,
 } from "@/lib/server-media-client";
+import {
+  analyzeWithFfmpeg,
+  cancelFfmpeg,
+  createHevcPreviewProxy,
+  exportWithFfmpeg,
+} from "@/lib/ffmpeg-engine";
 import { saveProject, sourceFingerprint } from "@/lib/project-storage";
 import { formatTime } from "@/lib/time";
 
 export function EditorApp() {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, userId } = useAuth();
   const { openSignIn } = useClerk();
   const processingAbortRef = useRef<AbortController | null>(null);
-  const [mediaId, setMediaId] = useState<string | null>(null);
+  const [blobPathname, setBlobPathname] = useState<string | null>(null);
   const [processingStage, setProcessingStage] = useState("");
   const file = useEditorStore((state) => state.file);
   const metadata = useEditorStore((state) => state.metadata);
@@ -66,28 +72,40 @@ export function EditorApp() {
   const analyze = async (nextFile: File, nextMetadata: NonNullable<typeof metadata>, abort: AbortController) => {
     setStatus("analyzing", 0);
     try {
-      const mediaId = await uploadMedia(nextFile, (value, stage) => {
+      if (!userId) {
+        openSignIn();
+        setStatus("empty");
+        return;
+      }
+      const blob = await uploadMedia(nextFile, userId, (value, stage) => {
         setProcessingStage(stage ?? "Uploading video");
-        setStatus("analyzing", value * 0.65);
+        setStatus("analyzing", value * 0.45);
       }, abort.signal);
-      setMediaId(mediaId);
-      setProcessingStage("Analyzing audio on server");
-      setStatus("analyzing", 0.72);
-      const result = await analyzeOnServer(mediaId, nextMetadata, settings, abort.signal);
+      setBlobPathname(blob.pathname);
+      setProcessingStage("Analyzing audio on your device");
+      const result = await analyzeWithFfmpeg(nextFile, nextMetadata, settings, (value, stage) => {
+        setProcessingStage(stage ?? "Analyzing audio on your device");
+        setStatus("analyzing", 0.45 + value * 0.55);
+      });
       if (nextMetadata.videoCodec === "hevc" && !browserCanPlayHevc()) {
-        setProcessingStage("Creating fast server preview");
-        setStatus("analyzing", 0.86);
-        const proxy = await createPreviewOnServer(mediaId, abort.signal);
-        setSourceUrl(URL.createObjectURL(proxy));
+        const proxy = await createHevcPreviewProxy(nextFile, nextMetadata, (value, stage) => {
+          setProcessingStage(stage ?? "Creating browser preview");
+          setStatus("analyzing", value);
+        });
+        if (proxy) setSourceUrl(URL.createObjectURL(proxy));
       }
       setAnalysis(result);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") setStatus("empty");
-      else setError(cause instanceof Error ? cause.message : "The server could not analyze this video.");
+      else setError(cause instanceof Error ? cause.message : "The browser could not analyze this video.");
     }
   };
 
   const handleFile = async (nextFile: File) => {
+    if (!userId) {
+      openSignIn();
+      return;
+    }
     try {
       setStatus("analyzing", 0);
       const nextMetadata = await readMetadata(nextFile);
@@ -107,33 +125,41 @@ export function EditorApp() {
       openSignIn();
       return;
     }
-    if (!mediaId) {
-      setError("The server upload has expired. Select the video again.");
+    if (!blobPathname) {
+      setError("The video upload is unavailable. Select the video again.");
       return;
     }
     const abort = new AbortController();
     processingAbortRef.current = abort;
     try {
+      await checkExportEntitlement(abort.signal);
       setStatus("exporting", 0);
-      setProcessingStage("Rendering MP4 on server");
+      setProcessingStage("Rendering MP4 on your device");
       setStatus("exporting", 0.02);
-      const response = await exportOnServer(mediaId, ranges, abort.signal, (value, stage) => {
-        setProcessingStage(stage ?? "Rendering MP4 on server");
-        setStatus("exporting", value);
+      const output = await exportWithFfmpeg({
+        file,
+        metadata,
+        ranges,
+        signal: abort.signal,
+        onProgress: (value, stage) => {
+          setProcessingStage(stage ?? "Rendering MP4 on your device");
+          setStatus("exporting", value);
+        },
       });
+      await claimFreeExport(abort.signal);
       const handle = await maybeSaveWithPicker(`${file.name.replace(/\.[^.]+$/, "")}-autocut.mp4`);
-      if (handle && response.body) {
+      if (handle) {
         const writable = await handle.createWritable();
-        await response.body.pipeTo(writable);
+        await output.stream().pipeTo(writable);
       } else {
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
+        const url = URL.createObjectURL(output);
         const link = document.createElement("a");
         link.href = url;
         link.download = `${file.name.replace(/\.[^.]+$/, "")}-autocut.mp4`;
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
       }
+      void deleteStoredMedia(blobPathname);
       setStatus("ready", 1);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") setStatus("ready");
@@ -142,7 +168,7 @@ export function EditorApp() {
     }
   };
 
-  const exportReady = Boolean(mediaId);
+  const exportReady = Boolean(blobPathname);
   const keptDuration = ranges.filter((range) => range.enabled).reduce((sum, range) => sum + range.sourceEndUs - range.sourceStartUs, 0);
 
   return (
@@ -172,7 +198,7 @@ export function EditorApp() {
         </div>
       </header>
 
-      <div className="compatibility-note"><Check /><div><strong>Fast server processing ready</strong><span>Native FFmpeg handles analysis and export. Your browser stays responsive.</span></div></div>
+      <div className="compatibility-note"><Check /><div><strong>Private multipart upload</strong><span>Your source is stored privately while browser FFmpeg analyzes and exports it.</span></div></div>
       {!file ? <FileDrop onFile={(selected) => void handleFile(selected)} busy={status === "analyzing"} /> : (
         <div className="workspace">
           <div className="workspace-main">
@@ -193,11 +219,12 @@ export function EditorApp() {
           <div className="progress-card">
             <div className="spinner" />
             <strong>{processingStage || (status === "analyzing" ? "Listening for silent gaps…" : "Rendering your clean cut…")}</strong>
-            <p>{status === "analyzing" ? "Your video uploads once, then native FFmpeg analyzes it." : "Native FFmpeg is encoding H.264 and AAC on the server."}</p>
+            <p>{status === "analyzing" ? "Your video uploads directly to private Blob storage, then browser FFmpeg analyzes it." : "Browser FFmpeg is encoding H.264 and AAC on your device."}</p>
             <div className="progress-track"><i style={{ width: `${Math.round(progress * 100)}%` }} /></div>
             <span>{Math.round(progress * 100)}%</span>
             <button className="button button-ghost" onClick={() => {
               processingAbortRef.current?.abort();
+              cancelFfmpeg();
               setStatus(file ? "ready" : "empty");
             }}><X size={15} /> Cancel</button>
           </div>

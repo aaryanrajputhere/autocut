@@ -7,3 +7,6 @@ coverage
 .env.*
 !.env.example
 *.tsbuildinfo
+
+# clerk configuration (can include secrets)
+/.clerk/

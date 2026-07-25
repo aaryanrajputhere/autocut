@@ -38,7 +38,7 @@ export function FileDrop({ onFile, busy }: FileDropProps) {
         />
         <div className="format-note">H.264 or HEVC + AAC · MP4/MOV · up to 1080p · 60 minutes · 2 GB</div>
       </div>
-      <div className="local-banner"><LockKeyhole size={16} /><span><strong>Private temporary upload</strong>Your video is processed on the server and expires automatically.</span></div>
+      <div className="local-banner"><LockKeyhole size={16} /><span><strong>Private temporary upload</strong>Your video uploads directly to private storage and is processed on your device.</span></div>
     </section>
   );
 }

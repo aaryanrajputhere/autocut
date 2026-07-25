@@ -1,10 +1,10 @@
 "use client";
 
+import type { PutBlobResult } from "@vercel/blob";
+import { upload } from "@vercel/blob/client";
 import type { AnalysisResult, DetectionSettings, KeepRange, VideoMetadata } from "./types";
 
 type ProgressCallback = (progress: number, stage?: string) => void;
-
-type UploadResponse = { mediaId: string };
 
 export class PaymentRequiredError extends Error {
   constructor(public readonly checkoutUrl: string) {
@@ -13,31 +13,46 @@ export class PaymentRequiredError extends Error {
   }
 }
 
-export function uploadMedia(file: File, onProgress: ProgressCallback, signal: AbortSignal) {
-  return new Promise<string>((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open("POST", `/api/media?name=${encodeURIComponent(file.name)}`);
-    request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-    request.upload.onprogress = (event) => {
-      if (event.lengthComputable) onProgress(event.loaded / event.total, "Uploading video");
-    };
-    request.onerror = () => reject(new Error("The video upload failed."));
-    request.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
-    request.onload = () => {
-      let body: UploadResponse | { error?: string } = {};
-      try {
-        body = JSON.parse(request.responseText) as UploadResponse | { error?: string };
-      } catch {
-        // The status-based error below is more useful than a JSON parse error.
-      }
-      if (request.status < 200 || request.status >= 300 || !("mediaId" in body)) {
-        reject(new Error("error" in body && body.error ? body.error : "The server rejected the video upload."));
-        return;
-      }
-      resolve(body.mediaId);
-    };
-    signal.addEventListener("abort", () => request.abort(), { once: true });
-    request.send(file);
+export function uploadMedia(
+  file: File,
+  userId: string,
+  onProgress: ProgressCallback,
+  signal: AbortSignal,
+): Promise<PutBlobResult> {
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+  return upload(`videos/${userId}/${crypto.randomUUID()}-${safeName}`, file, {
+    access: "private",
+    handleUploadUrl: "/api/blob/upload",
+    multipart: true,
+    contentType: file.type || "video/mp4",
+    abortSignal: signal,
+    onUploadProgress: ({ percentage }) => {
+      onProgress(percentage / 100, "Uploading video securely");
+    },
+  });
+}
+
+export async function claimFreeExport(signal: AbortSignal) {
+  return requestExportEntitlement("POST", signal);
+}
+
+export async function checkExportEntitlement(signal: AbortSignal) {
+  return requestExportEntitlement("GET", signal);
+}
+
+async function requestExportEntitlement(method: "GET" | "POST", signal: AbortSignal) {
+  const response = await fetch("/api/export-entitlement", { method, signal });
+  const body = await response.json().catch(() => ({})) as { error?: string; checkoutUrl?: string };
+  if (response.status === 402 && body.checkoutUrl) throw new PaymentRequiredError(body.checkoutUrl);
+  if (!response.ok) throw new Error(body.error || "Could not verify export access.");
+}
+
+export async function deleteStoredMedia(pathname: string) {
+  await fetch("/api/blob/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pathname }),
+    keepalive: true,
   });
 }
 

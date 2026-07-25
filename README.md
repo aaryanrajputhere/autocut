@@ -1,11 +1,10 @@
 # AutoCut Web
 
-A private video editor that uses native server-side FFmpeg to detect silent gaps, lets you refine the keep ranges, previews the edited timeline, and exports a precise MP4.
+A private video editor that uploads sources directly to private Vercel Blob storage, uses browser FFmpeg to detect silent gaps, lets you refine the keep ranges, and exports a precise MP4.
 
 ## Requirements
 
 - Node.js 22+
-- Native `ffmpeg` available on `PATH` (or set `FFMPEG_PATH`)
 - Current desktop Chrome or Edge
 - H.264 or HEVC video with AAC audio in MP4/MOV, up to 1080p, 60 minutes, and 2 GB
 
@@ -22,6 +21,14 @@ Each signed-in Clerk account receives one free successful video export. Set
 `DODO_PAYMENTS_CHECKOUT_URL` to your DodoPayments payment-link or checkout URL;
 after the free export is used, later export attempts redirect there.
 
+## Vercel Blob
+
+Create a private Blob store under the Vercel project's **Storage** tab and
+connect it to the project. Vercel supplies `BLOB_READ_WRITE_TOKEN`; redeploy
+after connecting the store. Uploads use the authenticated
+`/api/blob/upload` token endpoint and go directly from the browser to Blob
+with multipart upload, avoiding the Vercel Function request-body limit.
+
 ## Checks
 
 ```bash
@@ -30,8 +37,9 @@ npm test
 npm run build
 ```
 
-Metadata and preview stay in the browser. The source uploads once to temporary server storage; native FFmpeg performs analysis and export, and uploads expire after six hours.
-
-Run this app on a persistent Node/Docker host with writable temporary storage. Multi-instance and serverless deployments should replace the temporary-media module with shared object storage and a job queue.
-
-HEVC inputs play directly when the browser supports them. Otherwise, native server FFmpeg creates a lightweight H.264 preview. Analysis and final export also use native server FFmpeg. Audio-only M4A/AAC files are not video-editor inputs.
+Metadata and processing stay in the browser. The source uploads once to
+private Blob storage and is deleted after a successful export. Abandoned
+uploads should additionally be cleaned up with a scheduled retention job.
+HEVC inputs play directly when the browser supports them; otherwise browser
+FFmpeg creates an H.264 preview. Audio-only M4A/AAC files are not
+video-editor inputs.
