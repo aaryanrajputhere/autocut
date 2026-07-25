@@ -24,6 +24,8 @@ import {
   createHevcStoryboard,
   exportWithFfmpeg,
 } from "@/lib/ffmpeg-engine";
+import { PreviewChunkController } from "@/lib/preview-chunk-controller";
+import type { PreviewChunk } from "@/lib/types";
 import { saveProject, sourceFingerprint } from "@/lib/project-storage";
 import { formatTime } from "@/lib/time";
 
@@ -31,11 +33,17 @@ export function EditorApp() {
   const { isSignedIn, userId } = useAuth();
   const { openSignIn } = useClerk();
   const processingAbortRef = useRef<AbortController | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
+  const chunkControllerRef = useRef<PreviewChunkController | null>(null);
   const [blobPathname, setBlobPathname] = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "ready" | "failed">("idle");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadError, setUploadError] = useState("");
   const [processingStage, setProcessingStage] = useState("");
   const [videoPlayable, setVideoPlayable] = useState(true);
   const [storyboardUrls, setStoryboardUrls] = useState<string[]>([]);
   const [creatingPreview, setCreatingPreview] = useState(false);
+  const [previewChunks, setPreviewChunks] = useState<PreviewChunk[]>([]);
   const file = useEditorStore((state) => state.file);
   const metadata = useEditorStore((state) => state.metadata);
   const ranges = useEditorStore((state) => state.ranges);
@@ -60,6 +68,7 @@ export function EditorApp() {
   useEffect(() => () => {
     storyboardUrls.forEach((url) => URL.revokeObjectURL(url));
   }, [storyboardUrls]);
+  useEffect(() => () => chunkControllerRef.current?.cancel(), []);
   useEffect(() => {
     if (!file || !metadata || !ranges.length || status !== "ready") return;
     const timeout = window.setTimeout(() => {
@@ -76,37 +85,59 @@ export function EditorApp() {
     return () => window.clearTimeout(timeout);
   }, [file, metadata, ranges, settings, status]);
 
-  const analyze = async (nextFile: File, nextMetadata: NonNullable<typeof metadata>, abort: AbortController) => {
+  const startUpload = (nextFile: File, nextUserId: string) => {
+    uploadAbortRef.current?.abort();
+    const abort = new AbortController();
+    uploadAbortRef.current = abort;
+    setUploadStatus("uploading");
+    setUploadProgress(0);
+    setUploadError("");
+    void uploadMedia(nextFile, nextUserId, (value) => {
+      setUploadProgress(value);
+    }, abort.signal).then((blob) => {
+      setBlobPathname(blob.pathname);
+      setUploadProgress(1);
+      setUploadStatus("ready");
+    }).catch((cause) => {
+      if (abort.signal.aborted) {
+        setUploadError("Upload cancelled. Retry before exporting.");
+      } else {
+        setUploadError(cause instanceof Error ? cause.message : "Private upload failed.");
+      }
+      setUploadStatus("failed");
+    });
+  };
+
+  const analyze = async (nextFile: File, nextMetadata: NonNullable<typeof metadata>, abort: AbortController, nativePlayable: boolean) => {
     setStatus("analyzing", 0);
     try {
-      if (!userId) {
-        openSignIn();
-        setStatus("empty");
-        return;
+      if (!nativePlayable) {
+        const controller = new PreviewChunkController(nextFile, nextMetadata.durationUs / 1e6);
+        chunkControllerRef.current?.cancel();
+        chunkControllerRef.current = controller;
+        controller.subscribe(setPreviewChunks);
+        await controller.prepareFirst((value, stage) => {
+          setProcessingStage(stage ?? "Preparing the first 5 seconds");
+          setStatus("analyzing", value);
+        });
       }
-      const blob = await uploadMedia(nextFile, userId, (value, stage) => {
-        setProcessingStage(stage ?? "Uploading video");
-        setStatus("analyzing", value * 0.45);
-      }, abort.signal);
-      setBlobPathname(blob.pathname);
+      setStatus("ready", 1);
       setProcessingStage("Analyzing audio on your device");
       const result = await analyzeWithFfmpeg(nextFile, nextMetadata, settings, (value, stage) => {
         setProcessingStage(stage ?? "Analyzing audio on your device");
-        setStatus("analyzing", 0.45 + value * 0.55);
       });
-      const playable = nextMetadata.videoCodec !== "hevc" || await canPlayVideoFile(nextFile);
-      setVideoPlayable(playable);
-      if (!playable) {
-        const frames = await createHevcStoryboard(nextFile, nextMetadata, (value, stage) => {
-          setProcessingStage(stage ?? "Creating lightweight storyboard");
-          setStatus("analyzing", 0.9 + value * 0.1);
-        });
-        setStoryboardUrls(frames.map((frame) => URL.createObjectURL(frame)));
-      }
+      if (abort.signal.aborted) throw new DOMException("Cancelled", "AbortError");
       setAnalysis(result);
+      if (!nativePlayable) chunkControllerRef.current?.requestAt(0);
     } catch (cause) {
       if (abort.signal.aborted || (cause instanceof DOMException && cause.name === "AbortError")) setStatus("empty");
-      else setError(cause instanceof Error ? cause.message : "The browser could not analyze this video.");
+      else if (!nativePlayable) {
+        try {
+          const frames = await createHevcStoryboard(nextFile, nextMetadata, () => undefined);
+          setStoryboardUrls(frames.map((frame) => URL.createObjectURL(frame)));
+        } catch { /* The original error is more useful. */ }
+        setError(cause instanceof Error ? cause.message : "The browser could not prepare this video.");
+      } else setError(cause instanceof Error ? cause.message : "The browser could not analyze this video.");
     }
   };
 
@@ -124,12 +155,16 @@ export function EditorApp() {
         return;
       }
       setStoryboardUrls([]);
-      setVideoPlayable(nextMetadata.videoCodec !== "hevc");
+      setPreviewChunks([]);
+      setBlobPathname(null);
+      const nativePlayable = nextMetadata.videoCodec !== "hevc" || await canPlayVideoFile(nextFile);
+      setVideoPlayable(nativePlayable);
       const url = URL.createObjectURL(nextFile);
       loadFile(nextFile, url, nextMetadata);
       const abort = new AbortController();
       processingAbortRef.current = abort;
-      await analyze(nextFile, nextMetadata, abort);
+      startUpload(nextFile, userId);
+      await analyze(nextFile, nextMetadata, abort, nativePlayable);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not read this video.");
     }
@@ -147,6 +182,9 @@ export function EditorApp() {
         setStatus("analyzing", value);
       });
       if (proxy) {
+        chunkControllerRef.current?.cancel();
+        chunkControllerRef.current = null;
+        setPreviewChunks([]);
         setSourceUrl(URL.createObjectURL(proxy));
         setVideoPlayable(true);
       }
@@ -201,6 +239,8 @@ export function EditorApp() {
       }
       await deleteStoredMedia(blobPathname);
       setBlobPathname(null);
+      setUploadStatus("idle");
+      setProcessingStage("Private source deleted");
       setStatus("ready", 1);
     } catch (cause) {
       if (abort.signal.aborted || (cause instanceof DOMException && cause.name === "AbortError")) setStatus("ready");
@@ -209,7 +249,7 @@ export function EditorApp() {
     }
   };
 
-  const exportReady = Boolean(file && metadata);
+  const exportReady = Boolean(file && metadata && uploadStatus === "ready");
   const keptDuration = ranges.filter((range) => range.enabled).reduce((sum, range) => sum + range.sourceEndUs - range.sourceStartUs, 0);
 
   return (
@@ -239,15 +279,25 @@ export function EditorApp() {
         </div>
       </header>
 
-      <div className="compatibility-note"><Check /><div><strong>Private multipart upload</strong><span>Your source is stored privately while browser FFmpeg analyzes and exports it.</span></div></div>
+      <div className="compatibility-note">
+        {uploadStatus === "failed" ? <AlertTriangle /> : <Check />}
+        <div>
+          <strong>Private upload: {uploadStatus === "uploading" ? `${Math.round(uploadProgress * 100)}%` : uploadStatus}</strong>
+          <span>{uploadStatus === "failed" ? uploadError : "Local editing runs independently; export unlocks after upload completes."}</span>
+        </div>
+        {uploadStatus === "failed" && file && userId && <button className="button button-ghost" onClick={() => startUpload(file, userId)}>Retry upload</button>}
+        {uploadStatus === "uploading" && <button className="button button-ghost" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button>}
+      </div>
       {!file ? <FileDrop onFile={(selected) => void handleFile(selected)} busy={status === "analyzing"} /> : (
         <div className="workspace">
           <div className="workspace-main">
             <VideoPlayer
               playable={videoPlayable}
+              chunks={previewChunks}
               storyboardUrls={storyboardUrls}
               creatingPreview={creatingPreview}
               onCreatePreview={() => void handleCreatePreview()}
+              onRequestChunk={(seconds) => chunkControllerRef.current?.requestAt(seconds)}
             />
             <Timeline />
             <footer className="status-bar">
@@ -265,11 +315,12 @@ export function EditorApp() {
           <div className="progress-card">
             <div className="spinner" />
             <strong>{processingStage || (status === "analyzing" ? "Listening for silent gaps…" : "Rendering your clean cut…")}</strong>
-            <p>{status === "analyzing" ? "Your video uploads directly to private Blob storage, then browser FFmpeg analyzes it." : "Browser FFmpeg is encoding H.264 and AAC on your device."}</p>
+            <p>{status === "analyzing" ? "Preparing local playback. The private upload continues independently." : "Browser FFmpeg is encoding H.264 and AAC on your device."}</p>
             <div className="progress-track"><i style={{ width: `${Math.round(progress * 100)}%` }} /></div>
             <span>{Math.round(progress * 100)}%</span>
             <button className="button button-ghost" onClick={() => {
               processingAbortRef.current?.abort();
+              chunkControllerRef.current?.cancel();
               cancelFfmpeg();
               setStatus(file ? "ready" : "empty");
             }}><X size={15} /> Cancel</button>

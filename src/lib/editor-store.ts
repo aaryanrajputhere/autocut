@@ -71,7 +71,9 @@ export const useEditorStore = create<EditorState>((set) => ({
   past: [],
   future: [],
   loadFile: (file, sourceUrl, metadata) => set({
-    file, sourceUrl, metadata, status: "ready", error: null, ranges: [],
+    file, sourceUrl, metadata, status: "ready", error: null, ranges: [{
+      id: crypto.randomUUID(), sourceStartUs: 0, sourceEndUs: metadata.durationUs, enabled: true,
+    }],
     detectedRanges: [], waveform: [], loudness: [], playheadUs: 0, past: [], future: [],
   }),
   setAnalysis: (result) => set({

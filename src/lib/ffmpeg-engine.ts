@@ -10,6 +10,19 @@ type ProgressCallback = (progress: number, stage?: string) => void;
 let ffmpeg: FFmpeg | null = null;
 let loadPromise: Promise<FFmpeg> | null = null;
 let loadedFileKey: string | null = null;
+let operationQueue: Promise<void> = Promise.resolve();
+
+async function serialized<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = operationQueue;
+  let release!: () => void;
+  operationQueue = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
 
 function fileKey(file: File) {
   return `${file.name}:${file.size}:${file.lastModified}`;
@@ -52,6 +65,7 @@ export async function analyzeWithFfmpeg(
   settings: DetectionSettings,
   onProgress: ProgressCallback,
 ): Promise<AnalysisResult> {
+  return serialized(async () => {
   const instance = await getFfmpeg(onProgress);
   const input = await ensureInput(instance, file, onProgress);
   const messages: string[] = [];
@@ -83,6 +97,55 @@ export async function analyzeWithFfmpeg(
   const ranges = rangesFromSilenceLog(messages, durationSeconds, settings);
   onProgress(1, "Analysis complete");
   return { metadata, waveform, loudness, windowMs, ranges };
+  });
+}
+
+export async function generatePreviewChunk(
+  file: File,
+  startSeconds: number,
+  durationSeconds: number,
+  onProgress: ProgressCallback,
+): Promise<Blob> {
+  return serialized(async () => {
+    const instance = await getFfmpeg(onProgress);
+    const input = await ensureInput(instance, file, onProgress);
+    const index = Math.floor(startSeconds / durationSeconds);
+    const outputName = `daddycutter-chunk-${index}.mp4`;
+    const messages: string[] = [];
+    const onLog: LogEventCallback = ({ message }) => {
+      messages.push(message);
+      const time = parseFfmpegTime(message);
+      if (time !== null) onProgress(Math.min(0.98, time / durationSeconds), "Preparing preview chunk");
+    };
+    instance.on("log", onLog);
+    try {
+      const exitCode = await instance.exec([
+        "-ss", startSeconds.toFixed(3),
+        "-i", input,
+        "-t", durationSeconds.toFixed(3),
+        "-map", "0:v:0",
+        "-map", "0:a:0?",
+        "-vf", "scale='min(960,iw)':-2",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "30",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-avoid_negative_ts", "make_zero",
+        outputName,
+      ]);
+      if (exitCode !== 0) throw new Error(lastMeaningfulLog(messages) ?? `Preview chunk ${index} failed.`);
+      const data = await instance.readFile(outputName);
+      await instance.deleteFile(outputName);
+      if (typeof data === "string") throw new Error("FFmpeg returned an invalid preview chunk.");
+      onProgress(1, "Preview chunk ready");
+      return new Blob([data.slice().buffer], { type: "video/mp4" });
+    } finally {
+      instance.off("log", onLog);
+    }
+  });
 }
 
 export async function exportWithFfmpeg({
@@ -236,6 +299,7 @@ export function cancelFfmpeg() {
   ffmpeg = null;
   loadPromise = null;
   loadedFileKey = null;
+  operationQueue = Promise.resolve();
 }
 
 export function ffmpegSupported() {

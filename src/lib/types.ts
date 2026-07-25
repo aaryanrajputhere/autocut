@@ -32,6 +32,17 @@ export type AnalysisResult = {
   ranges: KeepRange[];
 };
 
+export type PreviewChunkStatus = "queued" | "processing" | "ready" | "failed";
+
+export type PreviewChunk = {
+  index: number;
+  sourceStart: number;
+  sourceEnd: number;
+  status: PreviewChunkStatus;
+  blobUrl?: string;
+  error?: string;
+};
+
 export const DEFAULT_SETTINGS: DetectionSettings = {
   silenceThresholdDb: -38,
   minimumSilenceMs: 500,
