@@ -215,48 +215,6 @@ export async function exportWithFfmpeg({
   }
 }
 
-export async function createHevcPreviewProxy(
-  file: File,
-  metadata: VideoMetadata,
-  onProgress: ProgressCallback,
-) {
-  if (metadata.videoCodec !== "hevc") return null;
-  const instance = await getFfmpeg(onProgress);
-  const input = await ensureInput(instance, file, onProgress);
-  const outputName = "daddycutter-preview.mp4";
-  const durationSeconds = metadata.durationUs / 1e6;
-  const onLog: LogEventCallback = ({ message }) => {
-    const time = parseFfmpegTime(message);
-    if (time !== null) onProgress(Math.min(0.98, time / durationSeconds), "Creating H.264 preview");
-  };
-  instance.on("log", onLog);
-  try {
-    onProgress(0.01, "Preparing HEVC preview");
-    const exitCode = await instance.exec([
-      "-i", input,
-      "-map", "0:v:0",
-      "-map", "0:a:0",
-      "-vf", "scale='min(960,iw)':-2",
-      "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-crf", "30",
-      "-pix_fmt", "yuv420p",
-      "-c:a", "aac",
-      "-b:a", "128k",
-      "-movflags", "+faststart",
-      outputName,
-    ]);
-    if (exitCode !== 0) throw new Error(`FFmpeg preview conversion exited with code ${exitCode}.`);
-    const data = await instance.readFile(outputName);
-    await instance.deleteFile(outputName);
-    if (typeof data === "string") throw new Error("FFmpeg returned an invalid preview file.");
-    onProgress(1, "Preview ready");
-    return new Blob([data.slice().buffer], { type: "video/mp4" });
-  } finally {
-    instance.off("log", onLog);
-  }
-}
-
 export async function createHevcStoryboard(
   file: File,
   metadata: VideoMetadata,

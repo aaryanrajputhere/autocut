@@ -20,7 +20,6 @@ import {
 import {
   analyzeWithFfmpeg,
   cancelFfmpeg,
-  createHevcPreviewProxy,
   createHevcStoryboard,
   exportWithFfmpeg,
 } from "@/lib/ffmpeg-engine";
@@ -42,7 +41,7 @@ export function EditorApp() {
   const [processingStage, setProcessingStage] = useState("");
   const [videoPlayable, setVideoPlayable] = useState(true);
   const [storyboardUrls, setStoryboardUrls] = useState<string[]>([]);
-  const [creatingPreview, setCreatingPreview] = useState(false);
+  const [initialPreviewBlocking, setInitialPreviewBlocking] = useState(false);
   const [previewChunks, setPreviewChunks] = useState<PreviewChunk[]>([]);
   const file = useEditorStore((state) => state.file);
   const metadata = useEditorStore((state) => state.metadata);
@@ -56,7 +55,6 @@ export function EditorApp() {
   const sourceUrl = useEditorStore((state) => state.sourceUrl);
   const loadFile = useEditorStore((state) => state.loadFile);
   const setAnalysis = useEditorStore((state) => state.setAnalysis);
-  const setSourceUrl = useEditorStore((state) => state.setSourceUrl);
   const setStatus = useEditorStore((state) => state.setStatus);
   const setError = useEditorStore((state) => state.setError);
   const undo = useEditorStore((state) => state.undo);
@@ -112,14 +110,19 @@ export function EditorApp() {
     setStatus("analyzing", 0);
     try {
       if (!nativePlayable) {
+        setInitialPreviewBlocking(true);
         const controller = new PreviewChunkController(nextFile, nextMetadata.durationUs / 1e6);
         chunkControllerRef.current?.cancel();
         chunkControllerRef.current = controller;
         controller.subscribe(setPreviewChunks);
-        await controller.prepareFirst((value, stage) => {
-          setProcessingStage(stage ?? "Preparing the first 5 seconds");
-          setStatus("analyzing", value);
-        });
+        try {
+          await controller.prepareFirst((value, stage) => {
+            setProcessingStage(stage ?? "Preparing the first 5 seconds");
+            setStatus("analyzing", value);
+          });
+        } finally {
+          setInitialPreviewBlocking(false);
+        }
       }
       setStatus("ready", 1);
       setProcessingStage("Analyzing audio on your device");
@@ -167,33 +170,6 @@ export function EditorApp() {
       await analyze(nextFile, nextMetadata, abort, nativePlayable);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not read this video.");
-    }
-  };
-
-  const handleCreatePreview = async () => {
-    if (!file || !metadata || creatingPreview) return;
-    const abort = new AbortController();
-    processingAbortRef.current = abort;
-    setCreatingPreview(true);
-    setStatus("analyzing", 0);
-    try {
-      const proxy = await createHevcPreviewProxy(file, metadata, (value, stage) => {
-        setProcessingStage(stage ?? "Creating H.264 preview");
-        setStatus("analyzing", value);
-      });
-      if (proxy) {
-        chunkControllerRef.current?.cancel();
-        chunkControllerRef.current = null;
-        setPreviewChunks([]);
-        setSourceUrl(URL.createObjectURL(proxy));
-        setVideoPlayable(true);
-      }
-      setStatus("ready", 1);
-    } catch (cause) {
-      if (abort.signal.aborted || (cause instanceof DOMException && cause.name === "AbortError")) setStatus("ready");
-      else setError(cause instanceof Error ? cause.message : "Could not create a playable preview.");
-    } finally {
-      setCreatingPreview(false);
     }
   };
 
@@ -304,8 +280,6 @@ export function EditorApp() {
               playable={videoPlayable}
               chunks={previewChunks}
               storyboardUrls={storyboardUrls}
-              creatingPreview={creatingPreview}
-              onCreatePreview={() => void handleCreatePreview()}
               onRequestChunk={(seconds) => chunkControllerRef.current?.requestAt(seconds)}
               onNativePlaybackFailure={handleNativePlaybackFailure}
             />
@@ -320,7 +294,7 @@ export function EditorApp() {
         </div>
       )}
 
-      {(status === "analyzing" || status === "exporting") && (
+      {(initialPreviewBlocking || status === "exporting" || (status === "analyzing" && videoPlayable)) && (
         <div className="progress-overlay" role="status" aria-live="polite">
           <div className="progress-card">
             <div className="spinner" />

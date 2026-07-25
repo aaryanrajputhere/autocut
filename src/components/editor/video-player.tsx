@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Film, Pause, Play, Scissors } from "lucide-react";
+import { Pause, Play, Scissors } from "lucide-react";
 import { useEditorStore } from "@/lib/editor-store";
 import type { PreviewChunk } from "@/lib/types";
 import { formatTime, secondsToUs, usToSeconds } from "@/lib/time";
@@ -11,8 +11,6 @@ type VideoPlayerProps = {
   playable: boolean;
   chunks: PreviewChunk[];
   storyboardUrls: string[];
-  creatingPreview: boolean;
-  onCreatePreview: () => void;
   onRequestChunk: (timeSeconds: number) => void;
   onNativePlaybackFailure: () => void;
 };
@@ -21,8 +19,6 @@ export function VideoPlayer({
   playable,
   chunks,
   storyboardUrls,
-  creatingPreview,
-  onCreatePreview,
   onRequestChunk,
   onNativePlaybackFailure,
 }: VideoPlayerProps) {
@@ -210,7 +206,6 @@ export function VideoPlayer({
         }}>{playing ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}</button>
         <span className="timecode">{formatTime(trimmedTimeUs)} / {formatTime(trimmedDurationUs)}</span>
         <button className="tool-button" onClick={() => splitAt(playheadUs)}><Scissors size={15} /> Split at playhead</button>
-        {chunkMode && <button className="tool-button" onClick={onCreatePreview} disabled={creatingPreview}><Film size={15} /> {creatingPreview ? "Building…" : "Build complete preview"}</button>}
       </div>
     </section>
   );
