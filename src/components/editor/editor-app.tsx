@@ -9,7 +9,7 @@ import { Inspector } from "./inspector";
 import { Timeline } from "./timeline";
 import { VideoPlayer } from "./video-player";
 import { useEditorStore } from "@/lib/editor-store";
-import { readMetadata } from "@/lib/media";
+import { browserMemoryWarning, canPlayVideoFile, readMetadata } from "@/lib/media";
 import {
   checkExportEntitlement,
   claimFreeExport,
@@ -21,6 +21,7 @@ import {
   analyzeWithFfmpeg,
   cancelFfmpeg,
   createHevcPreviewProxy,
+  createHevcStoryboard,
   exportWithFfmpeg,
 } from "@/lib/ffmpeg-engine";
 import { saveProject, sourceFingerprint } from "@/lib/project-storage";
@@ -32,6 +33,9 @@ export function EditorApp() {
   const processingAbortRef = useRef<AbortController | null>(null);
   const [blobPathname, setBlobPathname] = useState<string | null>(null);
   const [processingStage, setProcessingStage] = useState("");
+  const [videoPlayable, setVideoPlayable] = useState(true);
+  const [storyboardUrls, setStoryboardUrls] = useState<string[]>([]);
+  const [creatingPreview, setCreatingPreview] = useState(false);
   const file = useEditorStore((state) => state.file);
   const metadata = useEditorStore((state) => state.metadata);
   const ranges = useEditorStore((state) => state.ranges);
@@ -53,6 +57,9 @@ export function EditorApp() {
   useEffect(() => () => {
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
   }, [sourceUrl]);
+  useEffect(() => () => {
+    storyboardUrls.forEach((url) => URL.revokeObjectURL(url));
+  }, [storyboardUrls]);
   useEffect(() => {
     if (!file || !metadata || !ranges.length || status !== "ready") return;
     const timeout = window.setTimeout(() => {
@@ -87,16 +94,18 @@ export function EditorApp() {
         setProcessingStage(stage ?? "Analyzing audio on your device");
         setStatus("analyzing", 0.45 + value * 0.55);
       });
-      if (nextMetadata.videoCodec === "hevc" && !browserCanPlayHevc()) {
-        const proxy = await createHevcPreviewProxy(nextFile, nextMetadata, (value, stage) => {
-          setProcessingStage(stage ?? "Creating browser preview");
-          setStatus("analyzing", value);
+      const playable = nextMetadata.videoCodec !== "hevc" || await canPlayVideoFile(nextFile);
+      setVideoPlayable(playable);
+      if (!playable) {
+        const frames = await createHevcStoryboard(nextFile, nextMetadata, (value, stage) => {
+          setProcessingStage(stage ?? "Creating lightweight storyboard");
+          setStatus("analyzing", 0.9 + value * 0.1);
         });
-        if (proxy) setSourceUrl(URL.createObjectURL(proxy));
+        setStoryboardUrls(frames.map((frame) => URL.createObjectURL(frame)));
       }
       setAnalysis(result);
     } catch (cause) {
-      if (cause instanceof DOMException && cause.name === "AbortError") setStatus("empty");
+      if (abort.signal.aborted || (cause instanceof DOMException && cause.name === "AbortError")) setStatus("empty");
       else setError(cause instanceof Error ? cause.message : "The browser could not analyze this video.");
     }
   };
@@ -109,6 +118,13 @@ export function EditorApp() {
     try {
       setStatus("analyzing", 0);
       const nextMetadata = await readMetadata(nextFile);
+      const warning = browserMemoryWarning(nextFile, nextMetadata);
+      if (warning && !window.confirm(`${warning}\n\nContinue anyway?`)) {
+        setStatus("empty");
+        return;
+      }
+      setStoryboardUrls([]);
+      setVideoPlayable(nextMetadata.videoCodec !== "hevc");
       const url = URL.createObjectURL(nextFile);
       loadFile(nextFile, url, nextMetadata);
       const abort = new AbortController();
@@ -119,20 +135,44 @@ export function EditorApp() {
     }
   };
 
+  const handleCreatePreview = async () => {
+    if (!file || !metadata || creatingPreview) return;
+    const abort = new AbortController();
+    processingAbortRef.current = abort;
+    setCreatingPreview(true);
+    setStatus("analyzing", 0);
+    try {
+      const proxy = await createHevcPreviewProxy(file, metadata, (value, stage) => {
+        setProcessingStage(stage ?? "Creating H.264 preview");
+        setStatus("analyzing", value);
+      });
+      if (proxy) {
+        setSourceUrl(URL.createObjectURL(proxy));
+        setVideoPlayable(true);
+      }
+      setStatus("ready", 1);
+    } catch (cause) {
+      if (abort.signal.aborted || (cause instanceof DOMException && cause.name === "AbortError")) setStatus("ready");
+      else setError(cause instanceof Error ? cause.message : "Could not create a playable preview.");
+    } finally {
+      setCreatingPreview(false);
+    }
+  };
+
   const handleExport = async () => {
     if (!file || !metadata) return;
     if (!isSignedIn) {
       openSignIn();
       return;
     }
-    if (!blobPathname) {
-      setError("The video upload is unavailable. Select the video again.");
-      return;
-    }
     const abort = new AbortController();
     processingAbortRef.current = abort;
     try {
       await checkExportEntitlement(abort.signal);
+      if (!blobPathname) {
+        setError("The video upload is unavailable. Select the video again.");
+        return;
+      }
       setStatus("exporting", 0);
       setProcessingStage("Rendering MP4 on your device");
       setStatus("exporting", 0.02);
@@ -147,7 +187,7 @@ export function EditorApp() {
         },
       });
       await claimFreeExport(abort.signal);
-      const handle = await maybeSaveWithPicker(`${file.name.replace(/\.[^.]+$/, "")}-autocut.mp4`);
+      const handle = await maybeSaveWithPicker(`${file.name.replace(/\.[^.]+$/, "")}-daddycutter.mp4`);
       if (handle) {
         const writable = await handle.createWritable();
         await output.stream().pipeTo(writable);
@@ -155,26 +195,27 @@ export function EditorApp() {
         const url = URL.createObjectURL(output);
         const link = document.createElement("a");
         link.href = url;
-        link.download = `${file.name.replace(/\.[^.]+$/, "")}-autocut.mp4`;
+        link.download = `${file.name.replace(/\.[^.]+$/, "")}-daddycutter.mp4`;
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
       }
-      void deleteStoredMedia(blobPathname);
+      await deleteStoredMedia(blobPathname);
+      setBlobPathname(null);
       setStatus("ready", 1);
     } catch (cause) {
-      if (cause instanceof DOMException && cause.name === "AbortError") setStatus("ready");
+      if (abort.signal.aborted || (cause instanceof DOMException && cause.name === "AbortError")) setStatus("ready");
       else if (cause instanceof PaymentRequiredError) window.location.assign(cause.checkoutUrl);
       else setError(cause instanceof Error ? cause.message : "Export failed.");
     }
   };
 
-  const exportReady = Boolean(blobPathname);
+  const exportReady = Boolean(file && metadata);
   const keptDuration = ranges.filter((range) => range.enabled).reduce((sum, range) => sum + range.sourceEndUs - range.sourceStartUs, 0);
 
   return (
     <main className="editor-shell">
       <header className="editor-header">
-        <Link href="/" className="brand"><span className="brand-mark"><Scissors size={17} /></span>autocut</Link>
+        <Link href="/" className="brand"><span className="brand-mark"><Scissors size={17} /></span>DaddyCutter</Link>
         <div className="header-center">
           {file && <><FileVideo size={15} /><span>{file.name}</span><small>{metadata ? formatBytes(metadata.size) : ""}</small></>}
         </div>
@@ -202,7 +243,12 @@ export function EditorApp() {
       {!file ? <FileDrop onFile={(selected) => void handleFile(selected)} busy={status === "analyzing"} /> : (
         <div className="workspace">
           <div className="workspace-main">
-            <VideoPlayer />
+            <VideoPlayer
+              playable={videoPlayable}
+              storyboardUrls={storyboardUrls}
+              creatingPreview={creatingPreview}
+              onCreatePreview={() => void handleCreatePreview()}
+            />
             <Timeline />
             <footer className="status-bar">
               <span><Check size={13} /> Local project</span>
@@ -256,12 +302,4 @@ async function maybeSaveWithPicker(name: string) {
 function formatBytes(bytes: number) {
   if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-}
-
-function browserCanPlayHevc() {
-  const video = document.createElement("video");
-  return Boolean(
-    video.canPlayType('video/mp4; codecs="hvc1"') ||
-    video.canPlayType('video/mp4; codecs="hev1"'),
-  );
 }

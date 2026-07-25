@@ -48,12 +48,16 @@ async function requestExportEntitlement(method: "GET" | "POST", signal: AbortSig
 }
 
 export async function deleteStoredMedia(pathname: string) {
-  await fetch("/api/blob/delete", {
+  const response = await fetch("/api/blob/delete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pathname }),
     keepalive: true,
   });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(body.error || "The exported video's temporary upload could not be deleted.");
+  }
 }
 
 export async function analyzeOnServer(

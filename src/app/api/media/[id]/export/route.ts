@@ -63,7 +63,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         headers: {
           "Content-Type": "video/mp4",
           "Content-Length": String(result.size),
-          "Content-Disposition": 'attachment; filename="autocut-output.mp4"',
+          "Content-Disposition": 'attachment; filename="daddycutter-output.mp4"',
           "Cache-Control": "private, no-store",
         },
       });

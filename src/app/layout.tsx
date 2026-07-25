@@ -5,7 +5,7 @@ import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AutoCut — Remove silence, keep the story",
+  title: "DaddyCutter — Remove silence, keep the story",
   description: "A private, browser-based video editor for removing silent gaps.",
 };
 

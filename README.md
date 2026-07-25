@@ -1,4 +1,4 @@
-# AutoCut Web
+# DaddyCutter Web
 
 A private video editor that uploads sources directly to private Vercel Blob storage, uses browser FFmpeg to detect silent gaps, lets you refine the keep ranges, and exports a precise MP4.
 
@@ -40,6 +40,7 @@ npm run build
 Metadata and processing stay in the browser. The source uploads once to
 private Blob storage and is deleted after a successful export. Abandoned
 uploads should additionally be cleaned up with a scheduled retention job.
-HEVC inputs play directly when the browser supports them; otherwise browser
-FFmpeg creates an H.264 preview. Audio-only M4A/AAC files are not
-video-editor inputs.
+HEVC inputs play directly when the browser supports the actual file. On
+unsupported devices, AutoCut creates a lightweight storyboard and lets the
+user explicitly request a playable H.264 proxy. Final exports use browser
+FFmpeg. Audio-only M4A/AAC files are not video-editor inputs.

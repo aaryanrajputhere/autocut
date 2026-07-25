@@ -102,7 +102,7 @@ export async function exportWithFfmpeg({
   const instance = await getFfmpeg(onProgress);
   const input = await ensureInput(instance, file, onProgress);
   const totalDuration = enabled.reduce((sum, range) => sum + (range.sourceEndUs - range.sourceStartUs) / 1e6, 0);
-  const outputName = "autocut-output.mp4";
+  const outputName = "daddycutter-output.mp4";
   const filterParts: string[] = [];
   const concatInputs: string[] = [];
 
@@ -160,7 +160,7 @@ export async function createHevcPreviewProxy(
   if (metadata.videoCodec !== "hevc") return null;
   const instance = await getFfmpeg(onProgress);
   const input = await ensureInput(instance, file, onProgress);
-  const outputName = "autocut-preview.mp4";
+  const outputName = "daddycutter-preview.mp4";
   const durationSeconds = metadata.durationUs / 1e6;
   const onLog: LogEventCallback = ({ message }) => {
     const time = parseFfmpegTime(message);
@@ -192,6 +192,43 @@ export async function createHevcPreviewProxy(
   } finally {
     instance.off("log", onLog);
   }
+}
+
+export async function createHevcStoryboard(
+  file: File,
+  metadata: VideoMetadata,
+  onProgress: ProgressCallback,
+) {
+  if (metadata.videoCodec !== "hevc") return [];
+  const instance = await getFfmpeg(onProgress);
+  const input = await ensureInput(instance, file, onProgress);
+  const frameCount = 12;
+  const interval = Math.max(1, metadata.durationUs / 1e6 / frameCount);
+  const outputPattern = "daddycutter-thumb-%02d.jpg";
+
+  onProgress(0.05, "Creating lightweight storyboard");
+  const exitCode = await instance.exec([
+    "-i", input,
+    "-vf", `fps=1/${interval},scale=320:-2`,
+    "-frames:v", String(frameCount),
+    "-q:v", "6",
+    outputPattern,
+  ]);
+  if (exitCode !== 0) throw new Error("Could not create an HEVC storyboard.");
+
+  const frames: Blob[] = [];
+  for (let index = 1; index <= frameCount; index += 1) {
+    const name = `daddycutter-thumb-${String(index).padStart(2, "0")}.jpg`;
+    try {
+      const data = await instance.readFile(name);
+      await instance.deleteFile(name);
+      if (typeof data !== "string") frames.push(new Blob([data.slice().buffer], { type: "image/jpeg" }));
+    } catch {
+      break;
+    }
+  }
+  onProgress(1, "Storyboard ready");
+  return frames;
 }
 
 export function cancelFfmpeg() {

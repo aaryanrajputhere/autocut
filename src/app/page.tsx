@@ -6,7 +6,7 @@ export default function HomePage() {
   return (
     <main className="landing-shell">
       <nav className="landing-nav" aria-label="Primary navigation">
-        <Link href="/" className="brand"><span className="brand-mark"><Scissors size={18} /></span>autocut</Link>
+        <Link href="/" className="brand"><span className="brand-mark"><Scissors size={18} /></span>DaddyCutter</Link>
         <div className="nav-actions">
           <Show when="signed-out">
             <SignInButton mode="modal">
@@ -25,7 +25,7 @@ export default function HomePage() {
       <section className="hero">
         <div className="eyebrow"><Sparkles size={14} /> Fast, automatic video editing</div>
         <h1>Cut the silence.<br /><span>Keep the story.</span></h1>
-        <p>Drop in a video and AutoCut finds the quiet parts, builds your timeline, and exports a clean MP4 using private browser processing.</p>
+        <p>Drop in a video and DaddyCutter finds the quiet parts, builds your timeline, and exports a clean MP4 using private browser processing.</p>
         <div className="hero-actions">
           <Link href="/editor" className="button button-primary">Edit a video <ArrowRight size={17} /></Link>
           <span className="privacy-note"><LockKeyhole size={15} /> Private upload, on-device processing</span>

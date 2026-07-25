@@ -1,11 +1,24 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Pause, Play, Scissors } from "lucide-react";
+import { Film, Pause, Play, Scissors } from "lucide-react";
 import { useEditorStore } from "@/lib/editor-store";
 import { formatTime, secondsToUs, usToSeconds } from "@/lib/time";
 
-export function VideoPlayer() {
+type VideoPlayerProps = {
+  playable: boolean;
+  storyboardUrls: string[];
+  creatingPreview: boolean;
+  onCreatePreview: () => void;
+};
+
+export function VideoPlayer({
+  playable,
+  storyboardUrls,
+  creatingPreview,
+  onCreatePreview,
+}: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const sourceUrl = useEditorStore((state) => state.sourceUrl);
   const ranges = useEditorStore((state) => state.ranges);
@@ -114,10 +127,33 @@ export function VideoPlayer() {
   return (
     <section className="player-panel">
       <div className="video-stage">
-        {sourceUrl && <video ref={videoRef} src={sourceUrl} playsInline />}
+        {sourceUrl && playable && <video ref={videoRef} src={sourceUrl} playsInline />}
+        {!playable && storyboardUrls.length > 0 && (
+          <div className="storyboard-preview">
+            <div className="storyboard-grid" aria-label="Video storyboard">
+              {storyboardUrls.map((url, index) => (
+                <Image
+                  key={url}
+                  src={url}
+                  alt={`Video preview frame ${index + 1}`}
+                  width={320}
+                  height={180}
+                  unoptimized
+                />
+              ))}
+            </div>
+            <div className="storyboard-message">
+              <strong>HEVC storyboard</strong>
+              <span>Your browser cannot play this HEVC file directly.</span>
+              <button className="button button-primary" onClick={onCreatePreview} disabled={creatingPreview}>
+                <Film size={16} /> {creatingPreview ? "Creating preview…" : "Create playable preview"}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       <div className="transport">
-        <button className="icon-button" disabled={!keepRanges.length} aria-label={playing ? "Pause" : "Play"} onClick={() => {
+        <button className="icon-button" disabled={!keepRanges.length || !playable} aria-label={playing ? "Pause" : "Play"} onClick={() => {
           const video = videoRef.current;
           if (video) void togglePlayback(video, keepRanges);
         }}>{playing ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}</button>
