@@ -6,6 +6,13 @@ type ProgressCallback = (progress: number, stage?: string) => void;
 
 type UploadResponse = { mediaId: string };
 
+export class PaymentRequiredError extends Error {
+  constructor(public readonly checkoutUrl: string) {
+    super("Your free video has been used. Redirecting to payment.");
+    this.name = "PaymentRequiredError";
+  }
+}
+
 export function uploadMedia(file: File, onProgress: ProgressCallback, signal: AbortSignal) {
   return new Promise<string>((resolve, reject) => {
     const request = new XMLHttpRequest();
@@ -83,7 +90,10 @@ export async function exportOnServer(
     window.clearInterval(poll);
   }
   if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as { error?: string };
+    const body = await response.json().catch(() => ({})) as { error?: string; checkoutUrl?: string };
+    if (response.status === 402 && body.checkoutUrl) {
+      throw new PaymentRequiredError(body.checkoutUrl);
+    }
     throw new Error(body.error || "Server export failed.");
   }
   onProgress(1, "Export ready");

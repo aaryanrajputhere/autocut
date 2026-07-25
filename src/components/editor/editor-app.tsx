@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Show, SignInButton, SignUpButton, UserButton, useAuth, useClerk } from "@clerk/nextjs";
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Check, Download, FileVideo, Scissors, Undo2, Redo2, X } from "lucide-react";
 import { FileDrop } from "./file-drop";
@@ -9,11 +10,19 @@ import { Timeline } from "./timeline";
 import { VideoPlayer } from "./video-player";
 import { useEditorStore } from "@/lib/editor-store";
 import { readMetadata } from "@/lib/media";
-import { analyzeOnServer, createPreviewOnServer, exportOnServer, uploadMedia } from "@/lib/server-media-client";
+import {
+  analyzeOnServer,
+  createPreviewOnServer,
+  exportOnServer,
+  PaymentRequiredError,
+  uploadMedia,
+} from "@/lib/server-media-client";
 import { saveProject, sourceFingerprint } from "@/lib/project-storage";
 import { formatTime } from "@/lib/time";
 
 export function EditorApp() {
+  const { isSignedIn } = useAuth();
+  const { openSignIn } = useClerk();
   const processingAbortRef = useRef<AbortController | null>(null);
   const [mediaId, setMediaId] = useState<string | null>(null);
   const [processingStage, setProcessingStage] = useState("");
@@ -94,6 +103,10 @@ export function EditorApp() {
 
   const handleExport = async () => {
     if (!file || !metadata) return;
+    if (!isSignedIn) {
+      openSignIn();
+      return;
+    }
     if (!mediaId) {
       setError("The server upload has expired. Select the video again.");
       return;
@@ -124,6 +137,7 @@ export function EditorApp() {
       setStatus("ready", 1);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") setStatus("ready");
+      else if (cause instanceof PaymentRequiredError) window.location.assign(cause.checkoutUrl);
       else setError(cause instanceof Error ? cause.message : "Export failed.");
     }
   };
@@ -139,6 +153,17 @@ export function EditorApp() {
           {file && <><FileVideo size={15} /><span>{file.name}</span><small>{metadata ? formatBytes(metadata.size) : ""}</small></>}
         </div>
         <div className="header-actions">
+          <Show when="signed-out">
+            <SignInButton mode="modal">
+              <button className="button button-ghost auth-compact">Sign in</button>
+            </SignInButton>
+            <SignUpButton mode="modal">
+              <button className="button button-primary auth-compact">Sign up</button>
+            </SignUpButton>
+          </Show>
+          <Show when="signed-in">
+            <UserButton />
+          </Show>
           <button className="icon-button" aria-label="Undo" disabled={!past.length} onClick={undo}><Undo2 size={17} /></button>
           <button className="icon-button" aria-label="Redo" disabled={!future.length} onClick={redo}><Redo2 size={17} /></button>
           {file && <button className="button button-primary export-button" onClick={() => void handleExport()} disabled={!exportReady || status !== "ready" || !ranges.some((range) => range.enabled)}>

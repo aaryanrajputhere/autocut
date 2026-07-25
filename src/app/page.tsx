@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import { ArrowRight, LockKeyhole, Scissors, Sparkles, Zap } from "lucide-react";
 
 export default function HomePage() {
@@ -6,7 +7,20 @@ export default function HomePage() {
     <main className="landing-shell">
       <nav className="landing-nav" aria-label="Primary navigation">
         <Link href="/" className="brand"><span className="brand-mark"><Scissors size={18} /></span>autocut</Link>
-        <Link href="/editor" className="button button-ghost">Open editor <ArrowRight size={16} /></Link>
+        <div className="nav-actions">
+          <Show when="signed-out">
+            <SignInButton mode="modal">
+              <button className="button button-ghost">Sign in</button>
+            </SignInButton>
+            <SignUpButton mode="modal">
+              <button className="button button-primary">Sign up</button>
+            </SignUpButton>
+          </Show>
+          <Show when="signed-in">
+            <UserButton />
+          </Show>
+          <Link href="/editor" className="button button-ghost">Open editor <ArrowRight size={16} /></Link>
+        </div>
       </nav>
       <section className="hero">
         <div className="eyebrow"><Sparkles size={14} /> Fast, automatic video editing</div>

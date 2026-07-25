@@ -18,6 +18,10 @@ npm run dev
 
 Open `http://localhost:3000`. The landing page links to `/editor`.
 
+Each signed-in Clerk account receives one free successful video export. Set
+`DODO_PAYMENTS_CHECKOUT_URL` to your DodoPayments payment-link or checkout URL;
+after the free export is used, later export attempts redirect there.
+
 ## Checks
 
 ```bash
