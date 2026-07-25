@@ -7,20 +7,48 @@ export const MAX_DURATION_SECONDS = 60 * 60;
 
 export async function canPlayVideoFile(file: File) {
   const video = document.createElement("video");
+  const frameCallbacks = video as unknown as {
+    requestVideoFrameCallback?: (callback: VideoFrameRequestCallback) => number;
+    cancelVideoFrameCallback?: (handle: number) => void;
+  };
   const url = URL.createObjectURL(file);
   video.muted = true;
   video.preload = "auto";
+  video.playsInline = true;
 
   try {
     return await new Promise<boolean>((resolve) => {
-      const timeout = window.setTimeout(() => finish(false), 6000);
+      let finished = false;
+      let frameCallbackId: number | null = null;
+      const timeout = window.setTimeout(() => finish(false), 8000);
       const finish = (supported: boolean) => {
+        if (finished) return;
+        finished = true;
         window.clearTimeout(timeout);
+        if (frameCallbackId !== null) {
+          frameCallbacks.cancelVideoFrameCallback?.(frameCallbackId);
+        }
+        video.pause();
         video.removeAttribute("src");
         video.load();
         resolve(supported);
       };
-      video.addEventListener("loadeddata", () => finish(true), { once: true });
+
+      video.addEventListener("loadeddata", () => {
+        if (!video.videoWidth || !video.videoHeight) {
+          finish(false);
+          return;
+        }
+
+        // `loadeddata` can mean that only the container or audio track is
+        // usable. A presented frame proves that the browser decoded video.
+        if (frameCallbacks.requestVideoFrameCallback) {
+          frameCallbackId = frameCallbacks.requestVideoFrameCallback(() => finish(true));
+          void video.play().catch(() => finish(false));
+        } else {
+          finish(video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
+        }
+      }, { once: true });
       video.addEventListener("error", () => finish(false), { once: true });
       video.src = url;
       video.load();

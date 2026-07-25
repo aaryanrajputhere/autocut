@@ -197,6 +197,15 @@ export function EditorApp() {
     }
   };
 
+  const handleNativePlaybackFailure = () => {
+    if (!file || !metadata || metadata.videoCodec !== "hevc" || chunkControllerRef.current) return;
+    const controller = new PreviewChunkController(file, metadata.durationUs / 1e6);
+    chunkControllerRef.current = controller;
+    controller.subscribe(setPreviewChunks);
+    setVideoPlayable(false);
+    controller.requestAt(useEditorStore.getState().playheadUs / 1e6);
+  };
+
   const handleExport = async () => {
     if (!file || !metadata) return;
     if (!isSignedIn) {
@@ -298,12 +307,13 @@ export function EditorApp() {
               creatingPreview={creatingPreview}
               onCreatePreview={() => void handleCreatePreview()}
               onRequestChunk={(seconds) => chunkControllerRef.current?.requestAt(seconds)}
+              onNativePlaybackFailure={handleNativePlaybackFailure}
             />
             <Timeline />
             <footer className="status-bar">
               <span><Check size={13} /> Local project</span>
               <span>{ranges.filter((range) => range.enabled).length} clips · {formatTime(keptDuration, false)} output</span>
-              <span>H.264 · {metadata?.width}×{metadata?.height}</span>
+              <span>{metadata?.videoCodec === "hevc" ? "HEVC" : "H.264"} · {metadata?.width}×{metadata?.height}</span>
             </footer>
           </div>
           <Inspector />

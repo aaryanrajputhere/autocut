@@ -14,6 +14,7 @@ type VideoPlayerProps = {
   creatingPreview: boolean;
   onCreatePreview: () => void;
   onRequestChunk: (timeSeconds: number) => void;
+  onNativePlaybackFailure: () => void;
 };
 
 export function VideoPlayer({
@@ -23,6 +24,7 @@ export function VideoPlayer({
   creatingPreview,
   onCreatePreview,
   onRequestChunk,
+  onNativePlaybackFailure,
 }: VideoPlayerProps) {
   const originalRef = useRef<HTMLVideoElement>(null);
   const chunkRefs = [useRef<HTMLVideoElement>(null), useRef<HTMLVideoElement>(null)];
@@ -172,7 +174,19 @@ export function VideoPlayer({
   return (
     <section className="player-panel">
       <div className="video-stage">
-        {sourceUrl && playable && <video ref={originalRef} src={sourceUrl} playsInline />}
+        {sourceUrl && playable && (
+          <video
+            ref={originalRef}
+            src={sourceUrl}
+            playsInline
+            onError={onNativePlaybackFailure}
+            onLoadedData={(event) => {
+              if (!event.currentTarget.videoWidth || !event.currentTarget.videoHeight) {
+                onNativePlaybackFailure();
+              }
+            }}
+          />
+        )}
         {chunkMode && <>
           <video ref={chunkRefs[0]} className={activeSlot === 0 ? "chunk-active" : "chunk-preload"} playsInline />
           <video ref={chunkRefs[1]} className={activeSlot === 1 ? "chunk-active" : "chunk-preload"} playsInline />
