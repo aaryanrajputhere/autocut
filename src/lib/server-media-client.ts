@@ -16,6 +16,7 @@ export class PaymentRequiredError extends Error {
 export function uploadMedia(
   file: File,
   userId: string,
+  previewJobId: string | null,
   onProgress: ProgressCallback,
   signal: AbortSignal,
 ): Promise<PutBlobResult> {
@@ -25,11 +26,24 @@ export function uploadMedia(
     handleUploadUrl: "/api/blob/upload",
     multipart: true,
     contentType: file.type || "video/mp4",
+    clientPayload: JSON.stringify({ previewJobId }),
     abortSignal: signal,
     onUploadProgress: ({ percentage }) => {
       onProgress(percentage / 100, "Uploading video securely");
     },
   });
+}
+
+export async function getPreviewJob(jobId: string, signal: AbortSignal) {
+  const response = await fetch(`/api/preview-jobs/${jobId}`, { cache: "no-store", signal });
+  if (response.status === 404) return null;
+  const body = await response.json().catch(() => ({})) as {
+    status?: "queued" | "processing" | "ready" | "failed";
+    error?: string | null;
+    attempts?: number;
+  };
+  if (!response.ok || !body.status) throw new Error(body.error || "Could not check preview status.");
+  return body;
 }
 
 export async function claimFreeExport(signal: AbortSignal) {
@@ -47,11 +61,11 @@ async function requestExportEntitlement(method: "GET" | "POST", signal: AbortSig
   if (!response.ok) throw new Error(body.error || "Could not verify export access.");
 }
 
-export async function deleteStoredMedia(pathname: string) {
+export async function deleteStoredMedia(pathname: string, previewJobId?: string | null) {
   const response = await fetch("/api/blob/delete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pathname }),
+    body: JSON.stringify({ pathname, previewJobId }),
     keepalive: true,
   });
   if (!response.ok) {
